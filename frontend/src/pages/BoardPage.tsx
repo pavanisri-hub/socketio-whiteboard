@@ -15,12 +15,24 @@ type RemoteCursor = {
 
 type Tool = "pen" | "rectangle";
 
-type Stroke = {
-  tool: "pen";
+type PenStroke = {
+  type: "pen";
   color: string;
   width: number;
   points: { x: number; y: number }[];
 };
+
+type RectShape = {
+  type: "rectangle";
+  color: string;
+  width: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+};
+
+type CanvasObject = PenStroke | RectShape;
 
 function BoardPage() {
   const { boardId } = useParams<{ boardId: string }>();
@@ -34,7 +46,6 @@ function BoardPage() {
   const [strokeColor, setStrokeColor] = useState<string>("#000000");
   const [strokeWidth, setStrokeWidth] = useState<number>(3);
 
-  // keep latest values in refs so handlers always see current value
   const strokeColorRef = useRef<string>(strokeColor);
   const strokeWidthRef = useRef<number>(strokeWidth);
 
@@ -46,9 +57,12 @@ function BoardPage() {
     strokeWidthRef.current = strokeWidth;
   }, [strokeWidth]);
 
+  // Drawing state
   const isDrawingRef = useRef(false);
-  const currentStrokeRef = useRef<Stroke | null>(null);
-  const strokesRef = useRef<Stroke[]>([]);
+  const currentPenRef = useRef<PenStroke | null>(null);
+  const rectStartRef = useRef<{ x: number; y: number } | null>(null);
+  const currentRectRef = useRef<RectShape | null>(null);
+  const objectsRef = useRef<CanvasObject[]>([]);
 
   // Socket.io: join room + roomUsers + cursorUpdate
   useEffect(() => {
@@ -99,7 +113,7 @@ function BoardPage() {
 
     (window as any).getCanvasAsJSON = () => {
       return {
-        objects: strokesRef.current,
+        objects: objectsRef.current,
       };
     };
 
@@ -107,6 +121,35 @@ function BoardPage() {
       (window as any).getCanvasAsJSON = undefined;
     };
   }, []);
+
+  // Helper: redraw everything from objectsRef
+  const redrawAll = () => {
+    const canvas = canvasRef.current;
+    const ctx = ctxRef.current;
+    if (!canvas || !ctx) return;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    for (const obj of objectsRef.current) {
+      if (obj.type === "pen") {
+        if (obj.points.length < 2) continue;
+        ctx.strokeStyle = obj.color;
+        ctx.lineWidth = obj.width;
+        ctx.lineJoin = "round";
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(obj.points[0].x, obj.points[0].y);
+        for (let i = 1; i < obj.points.length; i++) {
+          ctx.lineTo(obj.points[i].x, obj.points[i].y);
+        }
+        ctx.stroke();
+      } else if (obj.type === "rectangle") {
+        ctx.strokeStyle = obj.color;
+        ctx.lineWidth = obj.width;
+        ctx.strokeRect(obj.x, obj.y, obj.w, obj.h);
+      }
+    }
+  };
 
   // Local mouse move -> cursorMove event (for remote cursors)
   const handleMouseMoveContainer = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -120,67 +163,115 @@ function BoardPage() {
     socket.emit("cursorMove", { x, y });
   };
 
-  // Canvas drawing handlers (pen only for now)
-  const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (activeTool !== "pen") return;
-
+  const getLocalPos = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    return {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+    };
+  };
 
+  // Canvas mouse handlers
+  const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const { x, y } = getLocalPos(e);
     isDrawingRef.current = true;
 
-    // use latest color + width from refs
-    const stroke: Stroke = {
-      tool: "pen",
-      color: strokeColorRef.current,
-      width: strokeWidthRef.current,
-      points: [{ x, y }],
-    };
-
-    currentStrokeRef.current = stroke;
+    if (activeTool === "pen") {
+      const stroke: PenStroke = {
+        type: "pen",
+        color: strokeColorRef.current,
+        width: strokeWidthRef.current,
+        points: [{ x, y }],
+      };
+      currentPenRef.current = stroke;
+    } else if (activeTool === "rectangle") {
+      rectStartRef.current = { x, y };
+      currentRectRef.current = {
+        type: "rectangle",
+        color: strokeColorRef.current,
+        width: strokeWidthRef.current,
+        x,
+        y,
+        w: 0,
+        h: 0,
+      };
+    }
   };
 
   const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!isDrawingRef.current) return;
-    if (activeTool !== "pen") return;
 
     const ctx = ctxRef.current;
     const canvas = canvasRef.current;
-    const stroke = currentStrokeRef.current;
-    if (!ctx || !canvas || !stroke) return;
+    if (!ctx || !canvas) return;
 
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const { x, y } = getLocalPos(e);
 
-    const lastPoint = stroke.points[stroke.points.length - 1];
-    stroke.points.push({ x, y });
+    if (activeTool === "pen") {
+      const stroke = currentPenRef.current;
+      if (!stroke) return;
 
-    ctx.strokeStyle = stroke.color;
-    ctx.lineWidth = stroke.width;
-    ctx.lineJoin = "round";
-    ctx.lineCap = "round";
-    ctx.beginPath();
-    ctx.moveTo(lastPoint.x, lastPoint.y);
-    ctx.lineTo(x, y);
-    ctx.stroke();
+      const last = stroke.points[stroke.points.length - 1];
+      stroke.points.push({ x, y });
+
+      // Draw incrementally
+      ctx.strokeStyle = stroke.color;
+      ctx.lineWidth = stroke.width;
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(last.x, last.y);
+      ctx.lineTo(x, y);
+      ctx.stroke();
+    } else if (activeTool === "rectangle") {
+      const start = rectStartRef.current;
+      const rectObj = currentRectRef.current;
+      if (!start || !rectObj) return;
+
+      const w = x - start.x;
+      const h = y - start.y;
+
+      // Update current rectangle
+      rectObj.x = w < 0 ? x : start.x;
+      rectObj.y = h < 0 ? y : start.y;
+      rectObj.w = Math.abs(w);
+      rectObj.h = Math.abs(h);
+
+      // Redraw all existing objects plus this temp rect
+      redrawAll();
+      ctx.strokeStyle = rectObj.color;
+      ctx.lineWidth = rectObj.width;
+      ctx.strokeRect(rectObj.x, rectObj.y, rectObj.w, rectObj.h);
+    }
   };
 
-  const handleCanvasMouseUp = () => {
+  const finishCurrentShape = () => {
     if (!isDrawingRef.current) return;
     isDrawingRef.current = false;
 
-    const stroke = currentStrokeRef.current;
-    if (stroke && stroke.points.length > 1) {
-      strokesRef.current = [...strokesRef.current, stroke];
+    if (activeTool === "pen") {
+      const stroke = currentPenRef.current;
+      if (stroke && stroke.points.length > 1) {
+        objectsRef.current = [...objectsRef.current, stroke];
+      }
+      currentPenRef.current = null;
+    } else if (activeTool === "rectangle") {
+      const rectObj = currentRectRef.current;
+      if (rectObj && rectObj.w > 0 && rectObj.h > 0) {
+        objectsRef.current = [...objectsRef.current, rectObj];
+      }
+      rectStartRef.current = null;
+      currentRectRef.current = null;
+      redrawAll();
     }
-    currentStrokeRef.current = null;
+  };
+
+  const handleCanvasMouseUp = () => {
+    finishCurrentShape();
   };
 
   const handleCanvasMouseLeave = () => {
-    if (!isDrawingRef.current) return;
-    handleCanvasMouseUp();
+    finishCurrentShape();
   };
 
   return (
