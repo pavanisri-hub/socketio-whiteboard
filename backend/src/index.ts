@@ -65,7 +65,7 @@ function emitRoomUsers(roomId: string) {
   io.to(roomId).emit("roomUsers", { users: usersArray });
 }
 
-// Basic Socket.io skeleton
+// Socket.io
 io.on("connection", (socket) => {
   console.log("Socket connected:", socket.id);
 
@@ -74,7 +74,6 @@ io.on("connection", (socket) => {
     socket.join(roomId);
     console.log(`Socket ${socket.id} joined room ${roomId}`);
 
-    // For now, fake user identity with socket.id
     const user: RoomUser = {
       id: socket.id,
       name: `User-${socket.id.slice(0, 5)}`,
@@ -90,10 +89,8 @@ io.on("connection", (socket) => {
     emitRoomUsers(roomId);
   });
 
-    socket.on("cursorMove", (payload: { x: number; y: number }) => {
+  socket.on("cursorMove", (payload: { x: number; y: number }) => {
     const { x, y } = payload;
-
-    // For simplicity, emit to all rooms this socket is in (excluding its own private room)
     const rooms = Array.from(socket.rooms).filter((roomId) => roomId !== socket.id);
 
     rooms.forEach((roomId) => {
@@ -105,10 +102,20 @@ io.on("connection", (socket) => {
     });
   });
 
+  // Drawing sync
+  socket.on("draw", (payload: { boardId: string; stroke: any }) => {
+    const { boardId, stroke } = payload;
+    socket.to(boardId).emit("drawUpdate", { stroke });
+  });
+
+  socket.on("addObject", (payload: { boardId: string; object: any }) => {
+    const { boardId, object } = payload;
+    socket.to(boardId).emit("objectAdded", { object });
+  });
+
   socket.on("disconnect", () => {
     console.log("Socket disconnected:", socket.id);
 
-    // Remove from all rooms
     roomUsers.forEach((users, roomId) => {
       if (users.has(socket.id)) {
         users.delete(socket.id);

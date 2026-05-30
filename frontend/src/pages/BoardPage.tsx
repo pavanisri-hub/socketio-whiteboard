@@ -48,6 +48,7 @@ function BoardPage() {
 
   const strokeColorRef = useRef<string>(strokeColor);
   const strokeWidthRef = useRef<number>(strokeWidth);
+  
 
   useEffect(() => {
     strokeColorRef.current = strokeColor;
@@ -63,64 +64,6 @@ function BoardPage() {
   const rectStartRef = useRef<{ x: number; y: number } | null>(null);
   const currentRectRef = useRef<RectShape | null>(null);
   const objectsRef = useRef<CanvasObject[]>([]);
-
-  // Socket.io: join room + roomUsers + cursorUpdate
-  useEffect(() => {
-    if (!boardId) return;
-
-    const socket = getSocket();
-
-    if (!socket.connected) {
-      socket.connect();
-    }
-
-    socket.emit("joinRoom", { boardId });
-
-    const handleRoomUsers = (payload: { users: RoomUser[] }) => {
-      setUsers(payload.users);
-    };
-
-    const handleCursorUpdate = (payload: RemoteCursor) => {
-      setRemoteCursors((prev) => ({
-        ...prev,
-        [payload.userId]: payload,
-      }));
-    };
-
-    socket.on("roomUsers", handleRoomUsers);
-    socket.on("cursorUpdate", handleCursorUpdate);
-
-    return () => {
-      socket.off("roomUsers", handleRoomUsers);
-      socket.off("cursorUpdate", handleCursorUpdate);
-    };
-  }, [boardId]);
-
-  // Initialize canvas size + context
-  useEffect(() => {
-    const container = containerRef.current;
-    const canvas = canvasRef.current;
-    if (!container || !canvas) return;
-
-    canvas.width = container.clientWidth;
-    canvas.height = container.clientHeight;
-
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctxRef.current = ctx;
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    (window as any).getCanvasAsJSON = () => {
-      return {
-        objects: objectsRef.current,
-      };
-    };
-
-    return () => {
-      (window as any).getCanvasAsJSON = undefined;
-    };
-  }, []);
 
   // Helper: redraw everything from objectsRef
   const redrawAll = () => {
@@ -150,6 +93,79 @@ function BoardPage() {
       }
     }
   };
+
+  // Initialize canvas size + context
+  useEffect(() => {
+    const container = containerRef.current;
+    const canvas = canvasRef.current;
+    if (!container || !canvas) return;
+
+    canvas.width = container.clientWidth;
+    canvas.height = container.clientHeight;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctxRef.current = ctx;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    (window as any).getCanvasAsJSON = () => {
+      return {
+        objects: objectsRef.current,
+      };
+    };
+
+    return () => {
+      (window as any).getCanvasAsJSON = undefined;
+    };
+  }, []);
+
+  // Socket.io: join room + roomUsers + cursorUpdate + drawing updates
+  useEffect(() => {
+    if (!boardId) return;
+
+    const socket = getSocket();
+
+    if (!socket.connected) {
+      socket.connect();
+    }
+
+    socket.emit("joinRoom", { boardId });
+
+    const handleRoomUsers = (payload: { users: RoomUser[] }) => {
+      setUsers(payload.users);
+    };
+
+    const handleCursorUpdate = (payload: RemoteCursor) => {
+      setRemoteCursors((prev) => ({
+        ...prev,
+        [payload.userId]: payload,
+      }));
+    };
+
+    const handleDrawUpdate = (payload: { stroke: CanvasObject }) => {
+      if (payload.stroke.type !== "pen") return;
+      objectsRef.current = [...objectsRef.current, payload.stroke];
+      redrawAll();
+    };
+
+    const handleObjectAdded = (payload: { object: CanvasObject }) => {
+      objectsRef.current = [...objectsRef.current, payload.object];
+      redrawAll();
+    };
+
+    socket.on("roomUsers", handleRoomUsers);
+    socket.on("cursorUpdate", handleCursorUpdate);
+    socket.on("drawUpdate", handleDrawUpdate);
+    socket.on("objectAdded", handleObjectAdded);
+
+    return () => {
+      socket.off("roomUsers", handleRoomUsers);
+      socket.off("cursorUpdate", handleCursorUpdate);
+      socket.off("drawUpdate", handleDrawUpdate);
+      socket.off("objectAdded", handleObjectAdded);
+    };
+  }, [boardId]);
 
   // Local mouse move -> cursorMove event (for remote cursors)
   const handleMouseMoveContainer = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -214,7 +230,6 @@ function BoardPage() {
       const last = stroke.points[stroke.points.length - 1];
       stroke.points.push({ x, y });
 
-      // Draw incrementally
       ctx.strokeStyle = stroke.color;
       ctx.lineWidth = stroke.width;
       ctx.lineJoin = "round";
@@ -231,13 +246,11 @@ function BoardPage() {
       const w = x - start.x;
       const h = y - start.y;
 
-      // Update current rectangle
       rectObj.x = w < 0 ? x : start.x;
       rectObj.y = h < 0 ? y : start.y;
       rectObj.w = Math.abs(w);
       rectObj.h = Math.abs(h);
 
-      // Redraw all existing objects plus this temp rect
       redrawAll();
       ctx.strokeStyle = rectObj.color;
       ctx.lineWidth = rectObj.width;
@@ -249,16 +262,24 @@ function BoardPage() {
     if (!isDrawingRef.current) return;
     isDrawingRef.current = false;
 
+    const socket = getSocket();
+
     if (activeTool === "pen") {
       const stroke = currentPenRef.current;
       if (stroke && stroke.points.length > 1) {
         objectsRef.current = [...objectsRef.current, stroke];
+        if (boardId) {
+          socket.emit("draw", { boardId, stroke });
+        }
       }
       currentPenRef.current = null;
     } else if (activeTool === "rectangle") {
       const rectObj = currentRectRef.current;
       if (rectObj && rectObj.w > 0 && rectObj.h > 0) {
         objectsRef.current = [...objectsRef.current, rectObj];
+        if (boardId) {
+          socket.emit("addObject", { boardId, object: rectObj });
+        }
       }
       rectStartRef.current = null;
       currentRectRef.current = null;
@@ -296,7 +317,6 @@ function BoardPage() {
         </ul>
       </div>
 
-      {/* Tools */}
       <div style={{ marginBottom: 8, display: "flex", gap: 8, alignItems: "center" }}>
         <button
           type="button"
