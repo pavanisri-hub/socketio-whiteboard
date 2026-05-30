@@ -38,6 +38,7 @@ function BoardPage() {
   const { boardId } = useParams<{ boardId: string }>();
   const [users, setUsers] = useState<RoomUser[]>([]);
   const [remoteCursors, setRemoteCursors] = useState<Record<string, RemoteCursor>>({});
+
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
@@ -46,9 +47,10 @@ function BoardPage() {
   const [strokeColor, setStrokeColor] = useState<string>("#000000");
   const [strokeWidth, setStrokeWidth] = useState<number>(3);
 
+  // keep latest color / width for handlers
   const strokeColorRef = useRef<string>(strokeColor);
   const strokeWidthRef = useRef<number>(strokeWidth);
-  
+  const [, setObjectsVersion] = useState(0); // trigger re-render when undoing
 
   useEffect(() => {
     strokeColorRef.current = strokeColor;
@@ -65,7 +67,7 @@ function BoardPage() {
   const currentRectRef = useRef<RectShape | null>(null);
   const objectsRef = useRef<CanvasObject[]>([]);
 
-  // Helper: redraw everything from objectsRef
+  // Redraw everything from objectsRef
   const redrawAll = () => {
     const canvas = canvasRef.current;
     const ctx = ctxRef.current;
@@ -94,7 +96,15 @@ function BoardPage() {
     }
   };
 
-  // Initialize canvas size + context
+  // Undo last object (local)
+  const undo = () => {
+    if (objectsRef.current.length === 0) return;
+    objectsRef.current = objectsRef.current.slice(0, -1);
+    redrawAll();
+    setObjectsVersion((v) => v + 1);
+  };
+
+  // Initialize canvas + JSON helper
   useEffect(() => {
     const container = containerRef.current;
     const canvas = canvasRef.current;
@@ -167,7 +177,7 @@ function BoardPage() {
     };
   }, [boardId]);
 
-  // Local mouse move -> cursorMove event (for remote cursors)
+  // Remote cursor sync
   const handleMouseMoveContainer = (e: React.MouseEvent<HTMLDivElement>) => {
     const socket = getSocket();
     if (!socket.connected) return;
@@ -317,7 +327,20 @@ function BoardPage() {
         </ul>
       </div>
 
-      <div style={{ marginBottom: 8, display: "flex", gap: 8, alignItems: "center" }}>
+      {/* Toolbar */}
+      <div
+        style={{
+          marginBottom: 12,
+          padding: 8,
+          border: "1px solid #ddd",
+          borderRadius: 6,
+          display: "flex",
+          gap: 8,
+          alignItems: "center",
+          flexWrap: "wrap",
+        }}
+      >
+        <div style={{ fontWeight: 600 }}>Tools:</div>
         <button
           type="button"
           onClick={() => setActiveTool("pen")}
@@ -343,25 +366,37 @@ function BoardPage() {
         >
           Rectangle
         </button>
-        <label style={{ marginLeft: 16 }}>
-          Color:{" "}
-          <input
-            type="color"
-            value={strokeColor}
-            onChange={(e) => setStrokeColor(e.target.value)}
-          />
-        </label>
-        <label style={{ marginLeft: 16 }}>
-          Brush size:{" "}
-          <input
-            type="range"
-            min={1}
-            max={20}
-            value={strokeWidth}
-            onChange={(e) => setStrokeWidth(Number(e.target.value))}
-          />
-          <span style={{ marginLeft: 4 }}>{strokeWidth}</span>
-        </label>
+
+        <div style={{ marginLeft: 12, fontWeight: 600 }}>Color:</div>
+        <input
+          type="color"
+          value={strokeColor}
+          onChange={(e) => setStrokeColor(e.target.value)}
+        />
+
+        <div style={{ marginLeft: 12, fontWeight: 600 }}>Size:</div>
+        <input
+          type="range"
+          min={1}
+          max={20}
+          value={strokeWidth}
+          onChange={(e) => setStrokeWidth(Number(e.target.value))}
+        />
+        <span>{strokeWidth}</span>
+
+        <div style={{ marginLeft: 12, fontWeight: 600 }}>History:</div>
+        <button
+          type="button"
+          onClick={undo}
+          style={{
+            padding: "4px 8px",
+            borderRadius: 4,
+            border: "1px solid #ccc",
+            background: "#fff",
+          }}
+        >
+          Undo
+        </button>
       </div>
 
       <div
